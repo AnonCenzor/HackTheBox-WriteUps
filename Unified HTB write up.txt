@@ -2,60 +2,58 @@ Unified HTB write up:
 
 machine IP: 10.129.95.229
 
-enumerated ports using nmap in Fast Mode
-ports open in Fast mode:
+enumerated ports using nmap
+ports:
 22
 8080
 8443
-
-enumerated once more without -F flag:
 6789
 
 
-information scanned from other ports: 
+information scanned: 
 22 is ssh
 22 has 3 hostkeys using RSA, ECDSA, and ED25519 respectively
 8080 is HTTP tomcat (Apache)
 8443 is TCP with ssl-cert from Ubiquiti; http title is UniFi Network (running this)
 6789 is tcop with service ibm-db2-admin? running
 
-we'll focus on 8443
-public key uses RSA with algo being sha256
-MD5 hash is e6be:8c03:5e12:6827:d1fe:612d:dc76:a919
-SHA-1 is 111b:aa11:9cca:4401:7cec:6e03:dc45:5cfe:65f6:d829
-we need to know what version is being ran
-what we've learned is that 8080 is open and redirects to port 8443 which is a login screen
+for this machine, we'll focus on 8443
+we need to know what version of UniFi is being ran
+port 8080 is open and redirects to port 8443 which is a login screen
 version being ran is 6.4.54
-what we've learned is that a TCP port being opened should always be explored
 searching "unifi 6.4.54 cve" leads us to CVE-2021-44228 (Log4j exploit)
 we'll need to install the prereqs and clone the repository
-started listening using netcat on port 4444
-got the callback
-this isn't how the exploit works
-doing research shows we'll need to intercept a request using BurpSuite and then use the username "rememberme" in a login request
+doing research shows we'll need to intercept a request using BurpSuite and then use the "rememberme" field in a login request
 followed this guide for the exploit but there are multiple ways to do this: https://www.sprocketsecurity.com/blog/another-log4j-on-the-fire-unifi
-for example, starting a netcat on port 4444 wasn't necessarily wrong
-as well, burpsuite is to be used to identify whether or not it's vulnerable by sending a payload and seeing if it returns a message
-then we perform a tcpdump on port 389 to monitor for LDAP connections
+
+what we did was rather than using the cURL command, we used BurpSuite to modify the "rememberme" attribute to inject the payload
+burpsuite is also used to identify whether or not it's vulnerable by sending a payload and seeing if it returns a message back to us
+
+then we perform a tcpdump on port 389 to monitor for LDAP connections to verify that LDAP connections are being made
+
 we then grab this repository https://github.com/veracode-research/rogue-jndi and build it
-follow the example in the repository 
-start the nc officially now
-modify the payload in our burpsuite interception to append the port that the example shows (spacing matters as that held me up for a while)
-poking around (checking the run folder) shows MongoDB running on 27117, free to move to exploitation
-running mongo --port 27117 ace --eval "db.admin.find().forEach(printjson);" shoots users in for us to obtain hashes
-grab the hashes and then use hashcat to reverse them
-this is the hash: $6$Ry6Vdbse$8enMR5Znxoo.WfCMd/Xk65GwuQEPx1M.QP8/qHiQV0PvUc3uHuonK4WcTQFN1CRk3GwQaquyVwCVq8iQgPT
-sha512 is 1800 in hashcat
-wordlist for hashcat is located in /usr/share/wordlists/
-the above takes time and processing power therefore, we can update the admin to have a hash we know and can crack
-we use the mkpasswd utility to create a hash that matches the instance since $6$ identified the hash as sha256
+follow the example in the repository to inject the payload
+
+we then start listening on a port using netcat so that we may receive the reverse shell
+
+once the port is listening, modify the payload in our burpsuite interception to append the port that the example shows (spacing matters)
+
+after receiving the reverse shell, we run ps aux to see what's running on the machine to find MongoDB running on the server on 27117, which allows us to move laterally 
+running 'mongo --port 27117 ace --eval "db.admin.find().forEach(printjson);"' queries users who may have admin in the name for us to obtain hashes for the passwords
+grab the hashes and can use hashid to identify how the passwords are being hashed
+
+this is the hash for one of the users: $6$Ry6Vdbse$8enMR5Znxoo.WfCMd/Xk65GwuQEPx1M.QP8/qHiQV0PvUc3uHuonK4WcTQFN1CRk3GwQaquyVwCVq8iQgPT
+sha512 is identified due to the $6$ identifier
+
+cracking the inserted takes time and processing power therefore, we can update the admin to have a hash we know and can crack
+
+we use the mkpasswd utility to create a hash that matches the instance since $6$ identified the hash as sha512
 new hash: $6$XKMmkQyehU5ajnKk$X1LQOQ0HRmx09hftsIYda3vYfIUgFwH.pj5NRFXBGbr8b10vXrK4IxJYxUqL6KbbrU0yVtObfneHDNXtGBUnk.
 
 mongo --port 27117 ace --eval 'db.admin.update({"_id":ObjectId("61ce278f46e0fb0012d47ee4")},{$set:{"x_shadow":"$6$XKMmkQyehU5ajnKk$X1LQOQ0HRmx09hftsIYda3vYfIUgFwH.pj5NRFXBGbr8b10vXrK4IxJYxUqL6KbbrU0yVtObfneHDNXtGBUnk."}})'
 
-by doing this, we actually bypass needing to crack the hash
-now that we've logged in to the administrator, we need to grab the root user's pw
-we've got the SSH root pw and now can obtain flags
+we can now login as the administrator within the web browser, we need to grab the root user's pw
+we've got the SSH root pw through Settings>Site>Device Authentication and now can obtain flags
 root: e50bc93c75b634e4b272d2f771c33681
 user: 6ced1a6a89e666c0620cdb10262ba127
 
@@ -68,10 +66,8 @@ what did we learn:
 - BurpSuite is pretty much always needed
 - researching outside is incredibly important especially for CVEs
 - we don't always need to crack the hash, sometimes like in this exploit, we can create our own password and add them to the db (since this exploit elevated us to do so) and then use that to login
-- unifi can show SSH creds in the Settings>Sites section
+- unifi can show SSH creds in the Settings>Sites>Device Authentication section
 - mkpasswd is useful for creating our own password and hashing it to add to a db
-- user flag is always located in home
-- root flag is pretty much always located on login
 
 
 
